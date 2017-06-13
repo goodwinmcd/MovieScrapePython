@@ -16,6 +16,9 @@ Challenges that were come across and the solutions.
   Solution:  I query the database to pull up any movie that might contain the english title (since metacritic, rotten 
   tomatos, and IMDB all include the english title) using wild card characters.  If the query returns a result then I
   do not upload the movie.  
+  Solution2: I recently changed it so that all movie titles are retrieved from IMDB to allow consistency.  So 'The Wailing (Goksung)' is
+  the title retrieved from rotten tomatoes.  I then search IMDB with that title, retrieve the title 'The Wailing' and then check my 
+  database for a movie called 'The Wailing'.  
 
   Problem: Rotten tomatoes uses javascript to generate dynamic HTML for their search results.  This means I couldn't retrieve search
   results from rotten tomatoes without generating the HTML first.  
@@ -30,10 +33,11 @@ Challenges that were come across and the solutions.
 
   Problem:  Inconsistency between dates between rotten tomatoes and imdb (usually off by a year).  
   Solution:  The release date of a movie is always obtained from imdb.  It then compares that date +/- 1 when searching rotten tomatoes
-  for a certain title.  
+  for a certain title. 
+  Solution2: Instead of using IMDB basic search I switched to using their advanced search. I use a date range of +/- 1 year so that only
+  the movie I'm looking for will show up.  This makes it so that I do not have to check for consistent release dates in my program.  
 
 Future work to do:
-  Use Imdbs advance search so that TV shows and date range are covered through searching IMDB instead of error checking in the program.  
-  Find more consistent methods of finding runtime and meta ratings.
+  Consistent way to find the correct movie of foreign titles.  
 
 Please feel free to contact me with any questions. 
