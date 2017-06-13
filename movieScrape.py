@@ -1,8 +1,8 @@
+#!/usr/bin/env
+
 #This program defines functions that can be used to collect data on a movie from a 
 #given title and date.  The information is collected from imdb and also provides functions
 #to retrieve the rotten tomato score and imdb score
-
-#!/usr/bin/env
 
 import urllib
 from urllib.request import urlopen
@@ -11,24 +11,32 @@ from selenium import webdriver
 from selenium.webdriver.firefox.firefox_binary import FirefoxBinary
 from unidecode import unidecode
 import time
+import re
 import pymysql
 pymysql.install_as_MySQLdb()
 import MySQLdb
+import requests
 
 #This function retrieves a movies url on IMDB using a title and a date passed in the format of title (date)
+#It will use IMDB advance search feature and show only movies within the date range of plus or minus one year.  
+#The movie will be found by searching for a link that has the same text as the movie title
 def getIMDBURL(title):
-  #Search movie title combined with the movies release year and select
-  #first option
-  title = title.replace(' ', '+')
+#  headers = {'Accept-Language':'en-US,en;q=0.8'}
+  title = title.replace(' ', '%20')
   date = title[-5:-1]
+  title = title[:-6]
   if date == '(TBA': return None
-  url = "http://www.imdb.com/find?ref_=nv_sr_fn&q=" + title + '&s=tt&exact=true&ref_=fn_al_tt_ex'
+#  foreignTitle = title[title.find('(')+1:title.find(')')]	#Keeps track of the foreign title that was in parenthesis
+  title = re.sub(r'\([^)]*\)', '', title)		#This removes the foreign title in parenthesis of any foreign movies
+  url = 'http://www.imdb.com/search/title?adult=include&release_date=' + str(int(date)-1) + ',' + str(int(date)+1) + '&title=' + title + '&title_type=feature,short,documentary'
   url = unidecode(url)                                  #For foreign characters in movie title
+  title = title.replace('%20', ' ').strip()
   page = urlopen(url)
-  soup = BeautifulSoup(page, "html.parser")
-  result = soup.find('td', class_ = 'result_text')
-  if result == None: return None
-  movieLink = 'http://www.imdb.com'+ result.a['href']	
+  soup = BeautifulSoup(page, 'html.parser')
+  movieLink = soup.find('a', text = title)
+  if movieLink != None: 
+    movieLink = movieLink['href']
+    movieLink = 'http://www.imdb.com' + movieLink
   return movieLink
 
 #Function to collect all movie information
@@ -38,52 +46,68 @@ def getMovieInfo(title):
   if movieLink == None: return None
   #load movie result page
   page = urlopen(movieLink)
-  soup = BeautifulSoup(page, "html.parser")
+  soup = BeautifulSoup(page, 'html.parser')
   runtime = getRuntime(soup)                            #call runtime function to get runtime
-  rtRating = getRTRating(title.replace('+', ' '))       #call rtRating function to get rotten tomatos rating
+  rtRating = getRTRating(title)  		        #call rtRating function to get rotten tomatos rating
   genre = getGenres(soup)                               #call genre function to get array of genres
   imdbRating = getImdbRating(soup)                      #call imdbRating function to get array of imdb rating
   metaRating = getMetaRating(soup)                      #call getMetaRating function to get meta critic rating from imdb page   
   budget = getBudget(soup)                              #get budget
   gross = getRevenue(soup)                              #get revenue
+  title1 = getTitle(soup)				#Get title	Note: The reason I rescrape the title and date is so that the date
+  date = getDate(soup)					#Get date	is coming from a consistent source (imdb)
   #Insert all info into a dictionary
-  movieInfo = {'Title': title.replace('+', ' '), 'Date': date, 'Length': runtime, 'Genres': genre, 'imdbRating': imdbRating, 'metaRating': metaRating, 'rtRating': rtRating, 'Budget': budget, 'Gross': gross,}
+  movieInfo = {'Title': title1, 'Date': date, 'Length': runtime, 'Genres': genre, 'imdbRating': imdbRating, 'metaRating': metaRating, 'rtRating': rtRating, 'Budget': budget, 'Gross': gross,}
   return movieInfo
+
+def getDate(soup):
+  date = soup.find('span', id = 'titleYear').a.contents[0]
+  return date
+
+def getRating(soup):
+  movieRating = soup.find('meta', itemprop = 'contentRating')
+  if movieRating != None: movieRating = movieRating['content']
+  return movieRating
+
+def getTitle(soup):
+  title = soup.find('h1', itemprop = 'name').contents[0]
+  return title[:-1]
+
+def checkDatabase(title, c):
+  found = False
+  url = getIMDBURL(title)
+  if url == None: return True
+  page = urlopen(url)
+  soup = BeautifulSoup(page, 'html.parser')
+  title = getTitle(soup)
+  date = int(getDate(soup))
+  c.execute("""SELECT title, date FROM movie WHERE title=%s""", (title,))
+  r = c.fetchall()
+  for each in r:
+    if (each[0] == title) and (each[1] == date): found = True
+  return found
 
 #A function to upload a movie to my database
 def uploadMovie(movie, c):
-  #This checks to see if a movie is already in the database.  It checks date and title so remakes will still be allowed to be uploaded
-  c.execute("""SELECT title, date FROM movie WHERE title=%s""", (movie['Title'],))
-  r = c.fetchall()
-  upload = True
-  for each in r:
-    if (each[0] == movie['Title']) & ((each[1] == movie['Date']) | (each[1] == str(int(movie['Date']) - 1)) | (each[1] == str(int(movie['Date']) + 1))):
-      upload = False
-  #RT includes foreign film name and english title.  This causes duplicates in the DB.  This test to make sure 
-  #there is not already a foreign film in the DB
-  c.execute("""SELECT title, date FROM movie WHERE title LIKE %%s%""", (movie['Title'],))
-  for each in r:
-    if (movie['Title'] in each[0]) and (movie['Date'] == each[1]): upload = False
-  #upload movie info into movie table
-  if upload == True:
-    c.execute("""INSERT INTO movie (title, date, runtime, budget, gross, imdb, rt, meta) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);""", (movie['Title'], movie['Date'], movie['Length'], movie['Budget'], movie['Gross'], movie['imdbRating'], movie['rtRating'], movie['metaRating']))
-    genreid = []
-    #upload genres and match the corresponding genre to the correct movie id in the link table
-    for each in movie['Genres']:
-      c.execute("""SELECT id, descript FROM genre WHERE descript=%s;""", each)
-      r = c.fetchall()
-      if len(r) == 0:
-        c.execute("""INSERT INTO genre (descript) VALUES (%s);""", (each,))
-        c.execute("""SELECT * FROM genre WHERE descript=%s;""", (each,))
-        r = c.fetchall()
-        genreid.append(r[0][0])
-      else:
-        genreid.append(r[0][0])
-    c.execute("""SELECT id, title FROM movie WHERE title=%s""", (movie['Title'],))
+  c.execute("""INSERT INTO movie (title, date, runtime, budget, gross, imdb, rt, meta) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);""", (movie['Title'], movie['Date'], movie['Length'], movie['Budget'], movie['Gross'], movie['imdbRating'], movie['rtRating'], movie['metaRating']))
+  genreid = []
+  #upload genres and match the corresponding genre to the correct movie id in the link table
+  for each in movie['Genres']:
+    c.execute("""SELECT id, descript FROM genre WHERE descript=%s;""", each)		#Check if genre is in table
     r = c.fetchall()
-    movieId = r[0][0]
-    for each in genreid:
-      c.execute("""INSERT INTO moviegenre (movieid, genreid) VALUES (%s, %s);""", (movieId, each,))
+    if len(r) == 0:
+      c.execute("""INSERT INTO genre (descript) VALUES (%s);""", (each,))		#If genre was not in table then insert the genre and
+      c.execute("""SELECT * FROM genre WHERE descript=%s;""", (each,))		#keep track of the genre id
+      r = c.fetchall()
+      genreid.append(r[0][0])
+    else:
+      genreid.append(r[0][0])								#If the genre was in the table then just retrieve the id
+  c.execute("""SELECT id, title FROM movie WHERE title=%s""", (movie['Title'],))	#Get the movie id
+  r = c.fetchall()
+  movieId = r[0][0]
+  for each in genreid:								#insert the values into the linking table
+    c.execute("""INSERT INTO moviegenre (movieid, genreid) VALUES (%s, %s);""", (movieId, each,))
+
 
 def getBudget(soup):
   budget = soup.find('h4', text = 'Budget:')
@@ -107,8 +131,10 @@ def getMetaRating(soup):
   metaRating = soup.find('div', class_ = 'titleReviewBar')
   if metaRating != None:
     metaRating = metaRating.find('span').contents[0]
-    if metaRating == '\n': metaRating = None
-    else: metaRating = int(metaRating)
+    metaRating = re.findall('\d+', metaRating)
+    if len(metaRating) == 0: return None
+    if metaRating == '\n': return None
+    else: metaRating = int(metaRating[0])
   return metaRating
 
 def getImdbRating(soup):
@@ -162,7 +188,7 @@ def getRTRating(title):
     searchDate = searchDate.contents[4]
     title = title.replace('%20', ' ')
     title = title.strip()
-    print(searchTitle)
+    #If the date plus or minus 1 of search results is within movie date AND the title matches or is within the title then it is a match
     if ((str(searchDate) == date) or (str(searchDate) == str(int(date) -1)) or (str(searchDate) == str(int(date) + 1))) and ((searchTitle.lower()) == title.lower() or (title in searchTitle)):
       rating = each.parent
       rating = rating.find('span', class_ = 'tMeterScore')
